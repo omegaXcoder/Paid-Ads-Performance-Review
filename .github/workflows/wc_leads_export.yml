@@ -1,0 +1,51 @@
+name: WhatConverts Leads Export
+
+on:
+  # Runs daily at 11:00 UTC (~5-6am Central, adjust for your timezone
+  # and daylight saving as needed).
+  schedule:
+    - cron: '0 11 * * *'
+
+  # Allows manual runs from the Actions tab, defaulting to a safe dry run.
+  workflow_dispatch:
+    inputs:
+      live:
+        description: 'Run live (write to Sheet + send email)? Leave unchecked for a dry run.'
+        type: boolean
+        default: false
+
+jobs:
+  export-leads:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run export
+        env:
+          WC_TOKEN: ${{ secrets.WC_TOKEN }}
+          WC_SECRET: ${{ secrets.WC_SECRET }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          # Scheduled runs are always live (that's the point of the automation).
+          # Manual (workflow_dispatch) runs default to dry run unless the
+          # "live" checkbox was ticked when triggering.
+          RUN_LIVE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.live) }}
+        run: |
+          if [ "$RUN_LIVE" = "true" ]; then
+            python main.py --live
+          else
+            python main.py
+          fi
