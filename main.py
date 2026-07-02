@@ -75,6 +75,36 @@ def get_periods():
     ]
 
 
+def _safe_replace_year(d, year):
+    """Shift a date to a different year, handling Feb 29 -> Feb 28 safely."""
+    try:
+        return d.replace(year=year)
+    except ValueError:
+        return d.replace(year=year, day=28)
+
+
+def get_yoy_range(period_label, start, end):
+    """
+    Returns (yoy_start, yoy_end) for a given period's current date range,
+    matching the same logic used in the Ads export script:
+      - Last 7 Days: shift back 365 days
+      - Previous Full Week (Mon-Sun): shift back 364 days (52 weeks,
+        preserves Mon-Sun alignment)
+      - Month to Date: same month/day, one calendar year back
+    """
+    if period_label == "Previous Full Week (Mon-Sun)":
+        shift = datetime.timedelta(days=364)
+        return start - shift, end - shift
+    elif period_label == "Month to Date":
+        return (
+            _safe_replace_year(start, start.year - 1),
+            _safe_replace_year(end, end.year - 1),
+        )
+    else:  # Last 7 Days (and any other default)
+        shift = datetime.timedelta(days=365)
+        return start - shift, end - shift
+
+
 # ── WhatConverts API ────────────────────────────────────────────────────
 
 def get_lead_count(token, secret, profile_id, quotable, start_date, end_date):
@@ -266,43 +296,62 @@ def main():
     all_rows = []
     errors = []
 
+    def fetch_row(profile_id, start, end):
+        """Fetches qualified/pending/not_set counts + qualified value totals
+        for one profile/date range. Returns a dict, or raises on API error."""
+        qualified_count, quote_value_sum, sales_value_sum = get_qualified_leads_totals(
+            token, secret, profile_id, start, end
+        )
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+        pending_count = get_lead_count(token, secret, profile_id, "pending", start, end)
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+        not_set_count = get_lead_count(token, secret, profile_id, "not_set", start, end)
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+        return {
+            "qualified": qualified_count,
+            "pending": pending_count,
+            "not_set": not_set_count,
+            "total": qualified_count + pending_count + not_set_count,
+            "quote_value": quote_value_sum,
+            "sales_value": sales_value_sum,
+        }
+
     for c in clients:
         for period_label, start, end in periods:
+            # ── Current period row ──────────────────────────────────────
             try:
-                # Qualified leads need the full records (to sum quote_value /
-                # sales_value), not just a count.
-                qualified_count, quote_value_sum, sales_value_sum = get_qualified_leads_totals(
-                    token, secret, c["profile_id"], start, end
-                )
-                time.sleep(REQUEST_DELAY_SECONDS)
-
-                # Pending / Not Set only need counts — leads_per_page=1 is enough.
-                pending_count = get_lead_count(
-                    token, secret, c["profile_id"], "pending", start, end
-                )
-                time.sleep(REQUEST_DELAY_SECONDS)
-
-                not_set_count = get_lead_count(
-                    token, secret, c["profile_id"], "not_set", start, end
-                )
-                time.sleep(REQUEST_DELAY_SECONDS)
-
-                total = qualified_count + pending_count + not_set_count
-
+                m = fetch_row(c["profile_id"], start, end)
                 all_rows.append([
                     datetime.datetime.now().isoformat(),
                     c["name"],
                     c["profile_id"],
                     f"{period_label} ({start.isoformat()} to {end.isoformat()})",
-                    qualified_count,
-                    pending_count,
-                    not_set_count,
-                    total,
-                    quote_value_sum,
-                    sales_value_sum,
+                    m["qualified"], m["pending"], m["not_set"], m["total"],
+                    m["quote_value"], m["sales_value"],
                 ])
             except requests.exceptions.RequestException as e:
                 msg = f"{c['name']} ({c['profile_id']}) / {period_label}: {e}"
+                errors.append(msg)
+                log(f"ERROR {msg}")
+                continue  # skip the YoY row too if the current one failed
+
+            # ── Prior year comparison row (same period, 1 year ago) ─────
+            yoy_start, yoy_end = get_yoy_range(period_label, start, end)
+            try:
+                py = fetch_row(c["profile_id"], yoy_start, yoy_end)
+                all_rows.append([
+                    datetime.datetime.now().isoformat(),
+                    c["name"],
+                    c["profile_id"],
+                    f"{period_label} - Prior Year ({yoy_start.isoformat()} to {yoy_end.isoformat()})",
+                    py["qualified"], py["pending"], py["not_set"], py["total"],
+                    py["quote_value"], py["sales_value"],
+                ])
+            except requests.exceptions.RequestException as e:
+                msg = f"{c['name']} ({c['profile_id']}) / {period_label} [Prior Year]: {e}"
                 errors.append(msg)
                 log(f"ERROR {msg}")
 
