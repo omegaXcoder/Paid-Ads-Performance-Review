@@ -85,6 +85,10 @@ def get_lead_count(token, secret, profile_id, quotable, start_date, end_date):
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "leads_per_page": 1,  # only need the total_leads count, not the leads themselves
+        # Google Ads leads only — matches the leads back to the Ads spend
+        # they're being reconciled against in the final report.
+        "lead_source": "google",
+        "lead_medium": "cpc",
     }
     resp = requests.get(WC_BASE_URL, params=params, auth=(token, secret), timeout=30)
     resp.raise_for_status()
@@ -93,9 +97,10 @@ def get_lead_count(token, secret, profile_id, quotable, start_date, end_date):
 
 def get_qualified_leads_totals(token, secret, profile_id, start_date, end_date):
     """
-    Fetches all Qualified (quotable=yes) leads for a profile/date range and
-    returns (count, total_quote_value, total_sales_value). Paginates using
-    the API max of 2500 leads/page in the rare case a client has more
+    Fetches all Qualified (quotable=yes) leads for a profile/date range,
+    filtered to Google/CPC leads only, and returns
+    (count, total_quote_value, total_sales_value). Paginates using the
+    API max of 2500 leads/page in the rare case a client has more
     qualified leads than that in a single period.
     """
     page = 1
@@ -112,6 +117,10 @@ def get_qualified_leads_totals(token, secret, profile_id, start_date, end_date):
             "end_date": end_date.isoformat(),
             "leads_per_page": per_page,
             "page_number": page,
+            # Google Ads leads only — matches the leads back to the Ads
+            # spend they're being reconciled against in the final report.
+            "lead_source": "google",
+            "lead_medium": "cpc",
         }
         resp = requests.get(WC_BASE_URL, params=params, auth=(token, secret), timeout=30)
         resp.raise_for_status()
@@ -129,6 +138,7 @@ def get_qualified_leads_totals(token, secret, profile_id, start_date, end_date):
         time.sleep(REQUEST_DELAY_SECONDS)
 
     return total_count, round(quote_sum, 2), round(sales_sum, 2)
+
 
 
 # ── Google Sheets ────────────────────────────────────────────────────────
@@ -300,12 +310,14 @@ def main():
 
     write_results(sheets_client, all_rows, dry_run, log)
 
-    if not dry_run:
-        subject = f"WhatConverts Leads Export — {'COMPLETED WITH ERRORS' if errors else 'SUCCESS'}"
-        body = "\n".join(log_lines)
-        if errors:
-            body += "\n\nErrors:\n" + "\n".join(errors)
-        send_log_email(subject, body)
+    # Always email the log, dry run or live, so a broken dry run doesn't
+    # go unnoticed just because it's "only a test."
+    mode_label = "DRY RUN" if dry_run else ("COMPLETED WITH ERRORS" if errors else "SUCCESS")
+    subject = f"AUTOMATION LOGGING: WhatConverts Leads Export — {mode_label}"
+    body = "\n".join(log_lines)
+    if errors:
+        body += "\n\nErrors:\n" + "\n".join(errors)
+    send_log_email(subject, body)
 
     log("=== Run finished ===")
 
